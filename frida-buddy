@@ -1,0 +1,54 @@
+#!/bin/bash
+# 启动 frida，自动加载同级目录下所有 .js 脚本，然后打印 api()
+# 所有参数原样透传给 frida，支持 -U / -D / -R / -n / -p / -f 等任意模式
+# 用 exec 直接启动，frida 继承真实 TTY，REPL 的 Tab 补全原生可用
+
+set -e
+
+# 解析软链接的真实路径（macOS 没有 readlink -f，逐级解引用）
+SELF="$0"
+while [ -L "$SELF" ]; do
+  link="$(readlink "$SELF")"
+  case "$link" in
+    /*) SELF="$link" ;;
+    *)  SELF="$(dirname "$SELF")/$link" ;;
+  esac
+done
+
+DIR="$(cd "$(dirname "$SELF")" && pwd)"
+
+usage() {
+  cat <<EOF
+用法: $(basename "$0") <frida 参数...>
+
+会自动 -l 加载 $DIR 下所有 .js 脚本，然后调用 api() 打印公开函数。
+所有参数原样透传给 frida，支持其任意连接/附加/启动模式。
+
+示例:
+  $(basename "$0") -U proc_name
+  $(basename "$0") -D udid -f bundle_id
+  $(basename "$0") -U -p pid
+  $(basename "$0") -R host:port bundle_id
+EOF
+}
+
+if [ $# -eq 0 ]; then
+  usage
+  exit 0
+fi
+
+# 动态收集同级目录下的所有 .js 文件（按文件名排序）
+LOAD_ARGS=()
+for f in "$DIR"/*.js; do
+  [ -f "$f" ] && LOAD_ARGS+=("-l" "$f")
+done
+
+if [ ${#LOAD_ARGS[@]} -eq 0 ]; then
+  echo "[!] $DIR 下没有 .js 脚本" >&2
+  exit 1
+fi
+
+# exec 直接启动：frida 的 stdin 保持为用户的真实终端（TTY），
+# REPL 走 PromptSession，Tab 补全与 CPR 均正常。
+# --no-auto-reload 放前面，用户传的 --auto-reload 可覆盖。
+exec frida --no-auto-reload "${LOAD_ARGS[@]}" -e 'api()' "$@"
